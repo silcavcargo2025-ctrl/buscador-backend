@@ -38,7 +38,7 @@ if not all([SERPAPI_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
 
 # ---------- Configurar Gemini ----------
 genai.configure(api_key=GEMINI_API_KEY)
-modelo_gemini = genai.GenerativeModel("gemini-1.5-flash")
+modelo_gemini = genai.GenerativeModel("gemini-2.0-flash")  # Modelo actualizado
 
 # ---------- Cliente Supabase ----------
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
