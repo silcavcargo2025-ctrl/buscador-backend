@@ -28,20 +28,20 @@ app.add_middleware(
 
 # ---------- Cargar variables de entorno ----------
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # ---------- Validaciones rápidas ----------
-if not all([SERPAPI_KEY, DEEPSEEK_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
-    logger.error("Faltan variables de entorno obligatorias (SERPAPI_KEY, DEEPSEEK_API_KEY, SUPABASE_URL, SUPABASE_KEY).")
+if not all([SERPAPI_KEY, MISTRAL_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+    logger.error("Faltan variables de entorno obligatorias (SERPAPI_KEY, MISTRAL_API_KEY, SUPABASE_URL, SUPABASE_KEY).")
 
-# ---------- Configurar DeepSeek (compatible con OpenAI) ----------
-deepseek = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com"
+# ---------- Configurar Mistral (compatible con OpenAI) ----------
+mistral = OpenAI(
+    api_key=MISTRAL_API_KEY,
+    base_url="https://api.mistral.ai/v1"
 )
-MODELO_DEEPSEEK = "deepseek-chat"  # el modelo más reciente y barato
+MODELO_MISTRAL = "mistral-small-latest"   # modelo gratuito y eficiente
 
 # ---------- Cliente Supabase ----------
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -96,9 +96,9 @@ def extraer_texto_visible(url: str) -> str:
         logger.warning(f"No se pudo obtener texto de {url}: {e}")
         return ""
 
-def extraer_datos_empresa_deepseek(texto_web: str, snippet: str) -> dict:
+def extraer_datos_empresa_mistral(texto_web: str, snippet: str) -> dict:
     """
-    Envía el texto y snippet a DeepSeek para extraer datos estructurados.
+    Envía el texto y snippet a Mistral para extraer datos estructurados.
     Retorna un diccionario con los campos solicitados.
     """
     prompt = f"""
@@ -122,8 +122,8 @@ Contenido de la página:
 JSON:
 """
     try:
-        response = deepseek.chat.completions.create(
-            model=MODELO_DEEPSEEK,
+        response = mistral.chat.completions.create(
+            model=MODELO_MISTRAL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=800,
@@ -135,10 +135,10 @@ JSON:
         if texto_respuesta.endswith("```"):
             texto_respuesta = texto_respuesta[:-3]
         datos = json.loads(texto_respuesta)
-        logger.info("Extracción DeepSeek exitosa")
+        logger.info("Extracción Mistral exitosa")
         return datos
     except json.JSONDecodeError as e:
-        logger.error(f"Error decodificando JSON de DeepSeek: {e} | Respuesta: {texto_respuesta[:200]}")
+        logger.error(f"Error decodificando JSON de Mistral: {e} | Respuesta: {texto_respuesta[:200]}")
         return {
             "nombre_empresa": None,
             "descripcion": None,
@@ -153,7 +153,7 @@ JSON:
             "error_extraccion": str(e)
         }
     except Exception as e:
-        logger.error(f"Error inesperado en DeepSeek: {e}")
+        logger.error(f"Error inesperado en Mistral: {e}")
         return {
             "nombre_empresa": None,
             "descripcion": None,
@@ -210,11 +210,11 @@ async def buscar(query: str = Query(..., description="Frase de búsqueda")):
     if not empresas_basicas:
         raise HTTPException(status_code=404, detail="No se encontraron resultados o hubo un error en la búsqueda.")
 
-    # 3. Extraer datos con DeepSeek
+    # 3. Extraer datos con Mistral
     resultados = []
     for emp in empresas_basicas:
         texto = extraer_texto_visible(emp["link"])
-        datos = extraer_datos_empresa_deepseek(texto, emp["snippet"])
+        datos = extraer_datos_empresa_mistral(texto, emp["snippet"])
         datos["pagina_web"] = emp.get("link", datos.get("pagina_web"))
         resultados.append(datos)
 
