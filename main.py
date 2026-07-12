@@ -8,7 +8,7 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 from bs4 import BeautifulSoup
-import google.generativeai as genai
+from openai import OpenAI
 from supabase import create_client, Client
 
 # Configurar logging básico
@@ -28,17 +28,20 @@ app.add_middleware(
 
 # ---------- Cargar variables de entorno ----------
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # ---------- Validaciones rápidas ----------
-if not all([SERPAPI_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
-    logger.error("Faltan variables de entorno obligatorias (SERPAPI_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY).")
+if not all([SERPAPI_KEY, DEEPSEEK_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+    logger.error("Faltan variables de entorno obligatorias (SERPAPI_KEY, DEEPSEEK_API_KEY, SUPABASE_URL, SUPABASE_KEY).")
 
-# ---------- Configurar Gemini ----------
-genai.configure(api_key=GEMINI_API_KEY)
-modelo_gemini = genai.GenerativeModel("gemini-2.0-flash")  # Modelo actualizado
+# ---------- Configurar DeepSeek (compatible con OpenAI) ----------
+deepseek = OpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com"
+)
+MODELO_DEEPSEEK = "deepseek-chat"  # el modelo más reciente y barato
 
 # ---------- Cliente Supabase ----------
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -93,9 +96,9 @@ def extraer_texto_visible(url: str) -> str:
         logger.warning(f"No se pudo obtener texto de {url}: {e}")
         return ""
 
-def extraer_datos_empresa_gemini(texto_web: str, snippet: str) -> dict:
+def extraer_datos_empresa_deepseek(texto_web: str, snippet: str) -> dict:
     """
-    Envía el texto y snippet a Gemini para extraer datos estructurados.
+    Envía el texto y snippet a DeepSeek para extraer datos estructurados.
     Retorna un diccionario con los campos solicitados.
     """
     prompt = f"""
@@ -119,18 +122,23 @@ Contenido de la página:
 JSON:
 """
     try:
-        response = modelo_gemini.generate_content(prompt)
-        texto_respuesta = response.text.strip()
+        response = deepseek.chat.completions.create(
+            model=MODELO_DEEPSEEK,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=800,
+        )
+        texto_respuesta = response.choices[0].message.content.strip()
         # Limpiar backticks si los hubiera
         if texto_respuesta.startswith("```json"):
             texto_respuesta = texto_respuesta[7:]
         if texto_respuesta.endswith("```"):
             texto_respuesta = texto_respuesta[:-3]
         datos = json.loads(texto_respuesta)
-        logger.info("Extracción Gemini exitosa")
+        logger.info("Extracción DeepSeek exitosa")
         return datos
     except json.JSONDecodeError as e:
-        logger.error(f"Error decodificando JSON de Gemini: {e} | Respuesta: {texto_respuesta[:200]}")
+        logger.error(f"Error decodificando JSON de DeepSeek: {e} | Respuesta: {texto_respuesta[:200]}")
         return {
             "nombre_empresa": None,
             "descripcion": None,
@@ -145,7 +153,7 @@ JSON:
             "error_extraccion": str(e)
         }
     except Exception as e:
-        logger.error(f"Error inesperado en Gemini: {e}")
+        logger.error(f"Error inesperado en DeepSeek: {e}")
         return {
             "nombre_empresa": None,
             "descripcion": None,
@@ -202,11 +210,11 @@ async def buscar(query: str = Query(..., description="Frase de búsqueda")):
     if not empresas_basicas:
         raise HTTPException(status_code=404, detail="No se encontraron resultados o hubo un error en la búsqueda.")
 
-    # 3. Extraer datos con Gemini
+    # 3. Extraer datos con DeepSeek
     resultados = []
     for emp in empresas_basicas:
         texto = extraer_texto_visible(emp["link"])
-        datos = extraer_datos_empresa_gemini(texto, emp["snippet"])
+        datos = extraer_datos_empresa_deepseek(texto, emp["snippet"])
         datos["pagina_web"] = emp.get("link", datos.get("pagina_web"))
         resultados.append(datos)
 
