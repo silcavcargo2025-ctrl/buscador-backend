@@ -9,8 +9,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from supabase import create_client, Client
 
 # Configurar logging básico
@@ -22,23 +20,21 @@ app = FastAPI(title="Buscador Inteligente de Empresas")
 # CORS – en producción limitar a tu dominio de Vercel
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # cambiar por "https://tu-frontend.vercel.app" al final
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ---------- Cargar variables de entorno ----------
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # service_role key
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # ---------- Validaciones rápidas ----------
-if not all([GOOGLE_API_KEY, GOOGLE_CSE_ID, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
-    logger.error("Faltan variables de entorno obligatorias.")
-    # no forzamos salida, pero los endpoints fallarán si faltan
+if not all([SERPAPI_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+    logger.error("Faltan variables de entorno obligatorias (SERPAPI_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY).")
 
 # ---------- Configurar Gemini ----------
 genai.configure(api_key=GEMINI_API_KEY)
@@ -48,35 +44,36 @@ modelo_gemini = genai.GenerativeModel("gemini-1.5-flash")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 CACHE_TTL_HOURS = 24
-MAX_RESULTADOS = 5  # número de empresas por búsqueda
+MAX_RESULTADOS = 5
 
 # ------------------------------------------------------------
 # Funciones auxiliares
 # ------------------------------------------------------------
 
 def buscar_empresas(query: str, num: int = MAX_RESULTADOS) -> list[dict]:
-    """
-    Busca en Google Custom Search y devuelve lista de dicts con:
-    titulo, link, snippet.
-    Si hay error, devuelve lista vacía.
-    """
+    """Usa SerpAPI para buscar en Google. Retorna lista con titulo, link, snippet."""
     try:
-        service = build("customsearch", "v1", developerKey=GOOGLE_API_KEY)
-        result = service.cse().list(q=query, cx=GOOGLE_CSE_ID, num=num).execute()
+        params = {
+            "q": query,
+            "api_key": SERPAPI_KEY,
+            "engine": "google",
+            "num": num,
+            "hl": "es",          # resultados en español
+        }
+        resp = requests.get("https://serpapi.com/search", params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
         empresas = []
-        for item in result.get("items", []):
+        for item in data.get("organic_results", []):
             empresas.append({
                 "titulo": item.get("title", ""),
                 "link": item.get("link", ""),
                 "snippet": item.get("snippet", ""),
             })
-        logger.info(f"Búsqueda Google OK: {len(empresas)} resultados para '{query}'")
+        logger.info(f"SerpAPI OK: {len(empresas)} resultados para '{query}'")
         return empresas
-    except HttpError as e:
-        logger.error(f"Error API Google: {e}")
-        return []
     except Exception as e:
-        logger.error(f"Error inesperado en búsqueda: {e}")
+        logger.error(f"Error en SerpAPI: {e}")
         return []
 
 def extraer_texto_visible(url: str) -> str:
@@ -134,7 +131,6 @@ JSON:
         return datos
     except json.JSONDecodeError as e:
         logger.error(f"Error decodificando JSON de Gemini: {e} | Respuesta: {texto_respuesta[:200]}")
-        # Devolvemos estructura base con error
         return {
             "nombre_empresa": None,
             "descripcion": None,
@@ -201,17 +197,16 @@ async def buscar(query: str = Query(..., description="Frase de búsqueda")):
     if cache:
         return {"empresas": cache, "fuente": "cache"}
 
-    # 2. Buscar empresas en Google
+    # 2. Buscar empresas con SerpAPI
     empresas_basicas = buscar_empresas(query, num=MAX_RESULTADOS)
     if not empresas_basicas:
         raise HTTPException(status_code=404, detail="No se encontraron resultados o hubo un error en la búsqueda.")
 
-    # 3. Para cada empresa, extraer datos con Gemini
+    # 3. Extraer datos con Gemini
     resultados = []
     for emp in empresas_basicas:
         texto = extraer_texto_visible(emp["link"])
         datos = extraer_datos_empresa_gemini(texto, emp["snippet"])
-        # Añadimos la URL real obtenida de Google (por si no la capturó Gemini)
         datos["pagina_web"] = emp.get("link", datos.get("pagina_web"))
         resultados.append(datos)
 
